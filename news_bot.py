@@ -16,9 +16,15 @@ import trafilatura
 from datetime import datetime, timezone, date
 from calendar import timegm
 from zoneinfo import ZoneInfo
-from deep_translator import GoogleTranslator
 
 TEHRAN_TZ = ZoneInfo("Asia/Tehran")
+
+# هدر مرورگر برای جلوگیری از مسدود شدن درخواست‌ها توسط سایت‌ها (بعضی سایت‌ها بدون این هدر ۴۰۳ می‌دن)
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+REQUEST_HEADERS = {"User-Agent": USER_AGENT}
 
 # ---------------------------------------------------------------------------
 # تنظیمات
@@ -26,19 +32,22 @@ TEHRAN_TZ = ZoneInfo("Asia/Tehran")
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")  # مثال: @mychannel یا -1001234567890
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+DEEPSEEK_MODEL = "deepseek-v4-flash"
+DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 
 STATE_FILE = "sent_news.json"
 MAX_STATE_ITEMS = 500          # حداکثر تعداد لینک ذخیره‌شده برای جلوگیری از تکرار
 MAX_ITEMS_PER_RUN = 6          # حداکثر خبر در هر اجرا (برای پخش‌شدن اخبار در طول روز)
-MAX_NEWS_AGE_HOURS = 3          # فقط اخباری که کمتر از این تعداد ساعت پیش منتشر شده‌اند (تازه بمونه)
+MAX_NEWS_AGE_HOURS = 5          # فقط اخباری که کمتر از این تعداد ساعت پیش منتشر شده‌اند (تازه بمونه)
 MAX_BODY_CHARS = 1200          # حداکثر طول متن خبر قبل از ترجمه
-MAX_SENTENCES_TO_TRANSLATE = 12  # حداکثر تعداد جمله برای ترجمه (جلوگیری از کندی/محدودیت نرخ)
-ECONOMIC_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+MAX_SENTENCES_TO_TRANSLATE = 12  # (دیگر استفاده نمی‌شود، برای سازگاری نگه داشته شده)
+ECONOMIC_CALENDAR_URL = "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json"
 
 # فیدهای RSS مرتبط با: جنگ، اقتصاد کلان، فارکس، طلا، نفت، ارز دیجیتال
+# نکته: فیدهای رسمی رویترز از سال ۲۰۲۰ غیرفعال شدن، به‌جاش از MarketWatch استفاده می‌کنیم
 RSS_FEEDS = {
-    "Reuters - Business":        "https://feeds.reuters.com/reuters/businessNews",
-    "Reuters - World":           "https://feeds.reuters.com/Reuters/worldNews",
+    "MarketWatch - Top Stories": "https://feeds.content.dowjones.io/public/rss/mw_topstories",
     "Investing.com - Economy":   "https://www.investing.com/rss/news_14.rss",
     "Investing.com - Forex":     "https://www.investing.com/rss/news_1.rss",
     "Investing.com - Commodities": "https://www.investing.com/rss/news_11.rss",
@@ -67,8 +76,7 @@ SOURCE_PRIORITY = {
     "CoinDesk":                    2,
     "CoinTelegraph":               2,
     "Investing.com - Economy":     2,
-    "Reuters - Business":          3,   # آخر از همه چک می‌شود
-    "Reuters - World":             3,   # آخر از همه چک می‌شود
+    "MarketWatch - Top Stories":   3,   # اخبار کلی/جنگ - آخر از همه چک می‌شود
 }
 
 # ---------------------------------------------------------------------------
@@ -119,12 +127,23 @@ def get_published_dt(entry):
     return datetime.fromtimestamp(timegm(published), tz=timezone.utc)
 
 
+def parse_feed_safely(url):
+    """خواندن فید RSS با هدر مرورگر تا سایت‌هایی که ربات‌ها رو مسدود می‌کنن جواب بدن."""
+    try:
+        resp = requests.get(url, headers=REQUEST_HEADERS, timeout=20)
+        resp.raise_for_status()
+        return feedparser.parse(resp.content)
+    except Exception as e:
+        print(f"خطا در خواندن فید: {e}")
+        return feedparser.parse(b"")
+
+
 def fetch_full_article_text(url):
     """تلاش برای گرفتن متن کامل خبر از خود صفحه (به‌جای فقط خلاصه‌ی کوتاه RSS)."""
     try:
-        downloaded = trafilatura.fetch_url(url)
-        if downloaded:
-            text = trafilatura.extract(downloaded)
+        resp = requests.get(url, headers=REQUEST_HEADERS, timeout=15)
+        if resp.status_code == 200:
+            text = trafilatura.extract(resp.text)
             if text:
                 return text.strip()
     except Exception as e:
@@ -132,23 +151,44 @@ def fetch_full_article_text(url):
     return ""
 
 
-def translate_to_persian(text, max_sentences=MAX_SENTENCES_TO_TRANSLATE):
-    """ترجمه جمله‌به‌جمله برای افزایش دقت ترجمه."""
+def translate_to_persian(text, max_chars=None):
+    """ترجمه‌ی متن به فارسی روان با استفاده از مدل DeepSeek (کیفیت بالاتر از ترجمه‌ی ماشینی ساده)."""
+    if not text:
+        return ""
+    limit = max_chars if max_chars else MAX_BODY_CHARS
+    text = text[:limit]
+
+    if not DEEPSEEK_API_KEY:
+        print("⚠️ کلید DeepSeek تنظیم نشده، ترجمه انجام نشد.")
+        return text
+
     try:
-        if not text:
-            return ""
-        text = text[:MAX_BODY_CHARS]
-        sentences = re.split(r'(?<=[.!?])\s+', text)[:max_sentences]
-        translated_parts = []
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if not sentence:
-                continue
-            translated = GoogleTranslator(source="auto", target="fa").translate(sentence)
-            translated_parts.append(translated if translated else sentence)
-        return " ".join(translated_parts)
+        payload = {
+            "model": DEEPSEEK_MODEL,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "شما یک مترجم حرفه‌ای اخبار مالی و اقتصادی هستید. "
+                        "متن انگلیسی داده‌شده را به فارسی روان، طبیعی و دقیق ترجمه کن. "
+                        "فقط ترجمه را برگردان، بدون هیچ توضیح یا مقدمه‌ی اضافی."
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+            "temperature": 0.3,
+        }
+        headers = {
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        resp = requests.post(DEEPSEEK_URL, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        translated = data["choices"][0]["message"]["content"].strip()
+        return translated if translated else text
     except Exception as e:
-        print(f"خطا در ترجمه: {e}")
+        print(f"خطا در ترجمه با DeepSeek: {e}")
         return text  # اگه ترجمه نشد، متن اصلی رو برگردون
 
 
@@ -194,7 +234,7 @@ def send_plain_message(text):
 
 def fetch_economic_calendar():
     try:
-        resp = requests.get(ECONOMIC_CALENDAR_URL, timeout=20)
+        resp = requests.get(ECONOMIC_CALENDAR_URL, headers=REQUEST_HEADERS, timeout=20)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
@@ -230,7 +270,7 @@ def build_calendar_message(events):
         forecast = e.get("forecast", "") or "—"
         previous = e.get("previous", "") or "—"
 
-        title_fa = translate_to_persian(title, max_sentences=3)
+        title_fa = translate_to_persian(title, max_chars=200)
         title_fa = fix_bidi_text(title_fa)
         impact_emoji = "🔴" if impact == "High" else "🟠"
         time_str = event_local.strftime("%H:%M")
@@ -307,10 +347,9 @@ def main():
     candidates = []
     for source_name, feed_url in RSS_FEEDS.items():
         print(f"در حال بررسی فید: {source_name}")
-        try:
-            feed = feedparser.parse(feed_url)
-        except Exception as e:
-            print(f"خطا در خواندن فید {source_name}: {e}")
+        feed = parse_feed_safely(feed_url)
+        if not feed or not getattr(feed, "entries", None):
+            print(f"⚠️ فید {source_name} خالی یا غیرقابل‌دسترس بود")
             continue
 
         for entry in feed.entries[:10]:  # حداکثر ۱۰ خبر آخر هر فید
@@ -326,9 +365,6 @@ def main():
                 continue  # قبلاً ارسال شده
 
             if not matches_keywords(title, rss_summary):
-                continue
-
-            if not is_recent(entry):
                 continue
 
             candidates.append({
@@ -356,7 +392,7 @@ def main():
         body_text = full_text if len(full_text) > len(clean_rss_summary) else clean_rss_summary
         body_text = body_text[:MAX_BODY_CHARS]
 
-        title_fa = translate_to_persian(c["title"], max_sentences=3)
+        title_fa = translate_to_persian(c["title"], max_chars=300)
         summary_fa = translate_to_persian(body_text)
         title_fa = fix_bidi_text(title_fa)
         summary_fa = fix_bidi_text(summary_fa)
@@ -377,3 +413,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
