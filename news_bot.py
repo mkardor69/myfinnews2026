@@ -16,6 +16,7 @@ import trafilatura
 from datetime import datetime, timezone, date
 from calendar import timegm
 from zoneinfo import ZoneInfo
+from deep_translator import GoogleTranslator
 
 TEHRAN_TZ = ZoneInfo("Asia/Tehran")
 
@@ -52,7 +53,7 @@ RSS_FEEDS = {
     "Investing.com - Forex":     "https://www.investing.com/rss/news_1.rss",
     "Investing.com - Commodities": "https://www.investing.com/rss/news_11.rss",
     "OilPrice.com":              "https://oilprice.com/rss/main",
-    "Kitco News":                "https://www.kitco.com/rss/KitcoNews.xml",
+    "Kitco News":                "https://www.kitco.com/news/category/mining/rss",
     "CoinDesk":                  "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "CoinTelegraph":             "https://cointelegraph.com/rss",
     "ForexLive":                 "https://www.forexlive.com/feed/news",
@@ -151,16 +152,25 @@ def fetch_full_article_text(url):
     return ""
 
 
+def translate_with_google_fallback(text):
+    """مترجم پشتیبان رایگان - وقتی DeepSeek در دسترس نیست یا موجودی ندارد."""
+    try:
+        translated = GoogleTranslator(source="auto", target="fa").translate(text)
+        return translated if translated else text
+    except Exception as e:
+        print(f"خطا در ترجمه‌ی پشتیبان (گوگل): {e}")
+        return text
+
+
 def translate_to_persian(text, max_chars=None):
-    """ترجمه‌ی متن به فارسی روان با استفاده از مدل DeepSeek (کیفیت بالاتر از ترجمه‌ی ماشینی ساده)."""
+    """ترجمه‌ی متن به فارسی. اول با DeepSeek (کیفیت بالاتر)، اگر ناموفق بود با گوگل ترنسلیت رایگان."""
     if not text:
         return ""
     limit = max_chars if max_chars else MAX_BODY_CHARS
     text = text[:limit]
 
     if not DEEPSEEK_API_KEY:
-        print("⚠️ کلید DeepSeek تنظیم نشده، ترجمه انجام نشد.")
-        return text
+        return translate_with_google_fallback(text)
 
     try:
         payload = {
@@ -186,10 +196,10 @@ def translate_to_persian(text, max_chars=None):
         resp.raise_for_status()
         data = resp.json()
         translated = data["choices"][0]["message"]["content"].strip()
-        return translated if translated else text
+        return translated if translated else translate_with_google_fallback(text)
     except Exception as e:
-        print(f"خطا در ترجمه با DeepSeek: {e}")
-        return text  # اگه ترجمه نشد، متن اصلی رو برگردون
+        print(f"خطا در ترجمه با DeepSeek، رفتن سراغ پشتیبان: {e}")
+        return translate_with_google_fallback(text)
 
 
 def fix_bidi_text(text):
@@ -413,4 +423,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
