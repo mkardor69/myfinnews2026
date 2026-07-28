@@ -143,14 +143,39 @@ def parse_feed_safely(url):
         return feedparser.parse(b"")
 
 
+# عنوان‌های رایج بخش «مقالات مرتبط» که باید از انتهای متن استخراج‌شده حذف بشن
+BOILERPLATE_MARKERS = [
+    "related posts", "related articles", "more top reads",
+    "you might also like", "read more", "recommended for you",
+    "more from", "also read", "further reading",
+]
+
+
+def strip_boilerplate(text):
+    """اگه بخش «مقالات مرتبط» تو متن استخراج‌شده باشه، از همون‌جا به بعد رو قطع می‌کنه
+    تا تیتر خبرهای دیگه قاطی متن اصلی نشه."""
+    lower_text = text.lower()
+    cut_at = len(text)
+    for marker in BOILERPLATE_MARKERS:
+        idx = lower_text.find(marker)
+        if idx != -1 and idx < cut_at:
+            cut_at = idx
+    return text[:cut_at].strip()
+
+
 def fetch_full_article_text(url):
     """تلاش برای گرفتن متن کامل خبر از خود صفحه (به‌جای فقط خلاصه‌ی کوتاه RSS)."""
     try:
         resp = requests.get(url, headers=REQUEST_HEADERS, timeout=15)
         if resp.status_code == 200:
-            text = trafilatura.extract(resp.text)
+            text = trafilatura.extract(
+                resp.text,
+                favor_precision=True,  # ترجیح میده کمتر بگیره ولی دقیق‌تر باشه (کمتر بولرپلیت)
+                include_comments=False,
+                include_tables=False,
+            )
             if text:
-                return text.strip()
+                return strip_boilerplate(text.strip())
     except Exception as e:
         print(f"خطا در استخراج متن کامل: {e}")
     return ""
