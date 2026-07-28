@@ -33,9 +33,9 @@ REQUEST_HEADERS = {"User-Agent": USER_AGENT}
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")  # مثال: @mychannel یا -1001234567890
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
-DEEPSEEK_MODEL = "deepseek-v4-flash"
-DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 STATE_FILE = "sent_news.json"
 MAX_STATE_ITEMS = 500          # حداکثر تعداد لینک ذخیره‌شده برای جلوگیری از تکرار
@@ -49,6 +49,8 @@ ECONOMIC_CALENDAR_URL = "https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.
 # نکته: فیدهای رسمی رویترز از سال ۲۰۲۰ غیرفعال شدن، به‌جاش از MarketWatch استفاده می‌کنیم
 RSS_FEEDS = {
     "MarketWatch - Top Stories": "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+    "CNBC - Economy":            "https://www.cnbc.com/id/20910258/device/rss/rss.html",
+    "CNBC - Finance":            "https://www.cnbc.com/id/10000664/device/rss/rss.html",
     "Investing.com - Economy":   "https://www.investing.com/rss/news_14.rss",
     "Investing.com - Forex":     "https://www.investing.com/rss/news_1.rss",
     "Investing.com - Commodities": "https://www.investing.com/rss/news_11.rss",
@@ -77,6 +79,8 @@ SOURCE_PRIORITY = {
     "CoinDesk":                    2,
     "CoinTelegraph":               2,
     "Investing.com - Economy":     2,
+    "CNBC - Economy":              2,
+    "CNBC - Finance":              2,
     "MarketWatch - Top Stories":   3,   # اخبار کلی/جنگ - آخر از همه چک می‌شود
 }
 
@@ -153,7 +157,7 @@ def fetch_full_article_text(url):
 
 
 def translate_with_google_fallback(text):
-    """مترجم پشتیبان رایگان - وقتی DeepSeek در دسترس نیست یا موجودی ندارد."""
+    """مترجم پشتیبان رایگان - وقتی OpenRouter در دسترس نیست."""
     try:
         translated = GoogleTranslator(source="auto", target="fa").translate(text)
         return translated if translated else text
@@ -163,18 +167,18 @@ def translate_with_google_fallback(text):
 
 
 def translate_to_persian(text, max_chars=None):
-    """ترجمه‌ی متن به فارسی. اول با DeepSeek (کیفیت بالاتر)، اگر ناموفق بود با گوگل ترنسلیت رایگان."""
+    """ترجمه‌ی متن به فارسی. اول با OpenRouter (رایگان، کیفیت بالا)، اگر ناموفق بود با گوگل ترنسلیت."""
     if not text:
         return ""
     limit = max_chars if max_chars else MAX_BODY_CHARS
     text = text[:limit]
 
-    if not DEEPSEEK_API_KEY:
+    if not OPENROUTER_API_KEY:
         return translate_with_google_fallback(text)
 
     try:
         payload = {
-            "model": DEEPSEEK_MODEL,
+            "model": OPENROUTER_MODEL,
             "messages": [
                 {
                     "role": "system",
@@ -189,16 +193,16 @@ def translate_to_persian(text, max_chars=None):
             "temperature": 0.3,
         }
         headers = {
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
         }
-        resp = requests.post(DEEPSEEK_URL, headers=headers, json=payload, timeout=30)
+        resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=30)
         resp.raise_for_status()
         data = resp.json()
         translated = data["choices"][0]["message"]["content"].strip()
         return translated if translated else translate_with_google_fallback(text)
     except Exception as e:
-        print(f"خطا در ترجمه با DeepSeek، رفتن سراغ پشتیبان: {e}")
+        print(f"خطا در ترجمه با OpenRouter، رفتن سراغ پشتیبان: {e}")
         return translate_with_google_fallback(text)
 
 
