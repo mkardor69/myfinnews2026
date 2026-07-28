@@ -34,7 +34,7 @@ REQUEST_HEADERS = {"User-Agent": USER_AGENT}
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")  # مثال: @mychannel یا -1001234567890
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = "openrouter/free"  # خودکار از بین مدل‌های رایگانِ فعلاً فعال انتخاب می‌کنه (شامل DeepSeek هم می‌شه)
+OPENROUTER_MODEL = "deepseek/deepseek-v4-flash:free"  # مدل بزرگ و قابل‌اعتماد، کمتر دچار توهم می‌شه
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 STATE_FILE = "sent_news.json"
@@ -166,6 +166,27 @@ def translate_with_google_fallback(text):
         return text
 
 
+PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
+
+
+def extract_numbers(text):
+    """همه‌ی اعداد (فارسی یا انگلیسی) رو از متن استخراج می‌کنه، برای مقایسه‌ی صحت ترجمه."""
+    normalized = text.translate(PERSIAN_DIGITS)
+    return set(re.findall(r"\d+\.?\d*", normalized))
+
+
+def numbers_match(original_text, translated_text):
+    """چک می‌کنه که اعداد مهم متن اصلی (مثل درصدها و قیمت‌ها) تو ترجمه هم باشن.
+    اگه حتی یه عدد مهم گم شده باشه، احتمال توهم/حذف اشتباه مدل رو نمی‌پذیریم و
+    ترجیح می‌دیم برگردیم به گوگل ترنسلیت که هیچ‌وقت عدد از خودش نمی‌سازه یا حذف نمی‌کنه."""
+    original_numbers = extract_numbers(original_text)
+    translated_numbers = extract_numbers(translated_text)
+    if not original_numbers:
+        return True  # متنی که عدد نداره، نیازی به این چک نداره
+    missing = original_numbers - translated_numbers
+    return len(missing) == 0
+
+
 def translate_to_persian(text, max_chars=None):
     """ترجمه‌ی متن به فارسی. اول با OpenRouter (رایگان، کیفیت بالا)، اگر ناموفق بود با گوگل ترنسلیت."""
     if not text:
@@ -213,7 +234,12 @@ def translate_to_persian(text, max_chars=None):
         resp.raise_for_status()
         data = resp.json()
         translated = data["choices"][0]["message"]["content"].strip()
-        return translated if translated else translate_with_google_fallback(text)
+        if not translated:
+            return translate_with_google_fallback(text)
+        if not numbers_match(text, translated):
+            print("⚠️ اعداد ترجمه با متن اصلی نمی‌خونه (احتمال توهم مدل)، رفتن سراغ پشتیبان گوگل")
+            return translate_with_google_fallback(text)
+        return translated
     except Exception as e:
         print(f"خطا در ترجمه با OpenRouter، رفتن سراغ پشتیبان: {e}")
         return translate_with_google_fallback(text)
