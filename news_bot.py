@@ -34,7 +34,13 @@ REQUEST_HEADERS = {"User-Agent": USER_AGENT}
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")  # مثال: @mychannel یا -1001234567890
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = "deepseek/deepseek-v4-flash:free"  # مدل بزرگ و قابل‌اعتماد، کمتر دچار توهم می‌شه
+OPENROUTER_MODEL_CANDIDATES = [
+    "deepseek/deepseek-v4-flash:free",          # ترجیح اول - کیفیت خوب برای فارسی (اگه در دسترس باشه)
+    "deepseek/deepseek-chat-v3.1:free",         # نسخه‌ی جایگزین دیپ‌سیک
+    "meta-llama/llama-3.3-70b-instruct:free",   # مدل بزرگ و شناخته‌شده
+    "qwen/qwen3-235b-a22b:free",                # مدل بزرگ جایگزین
+    "openrouter/free",                          # روتر خودکار (همیشه یه گزینه‌ی فعال پیدا می‌کنه)
+]
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 STATE_FILE = "sent_news.json"
@@ -213,7 +219,8 @@ def numbers_match(original_text, translated_text):
 
 
 def translate_to_persian(text, max_chars=None):
-    """ترجمه‌ی متن به فارسی. اول با OpenRouter (رایگان، کیفیت بالا)، اگر ناموفق بود با گوگل ترنسلیت."""
+    """ترجمه‌ی متن به فارسی. چند مدل OpenRouter رو به‌ترتیب امتحان می‌کنه، اگر همه ناموفق
+    بودن یا اعدادشون درست نبود، با گوگل ترنسلیت (پشتیبان نهایی)."""
     if not text:
         return ""
     limit = max_chars if max_chars else MAX_BODY_CHARS
@@ -222,52 +229,62 @@ def translate_to_persian(text, max_chars=None):
     if not OPENROUTER_API_KEY:
         return translate_with_google_fallback(text)
 
-    try:
-        payload = {
-            "model": OPENROUTER_MODEL,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "شما یک مترجم حرفه‌ای اخبار مالی، بازارهای سرمایه و تحلیل تکنیکال هستید. "
-                        "متن انگلیسی داده‌شده را به فارسی روان و طبیعی ترجمه کن، دقیقاً به سبکی که "
-                        "در اخبار و کانال‌های تحلیلی فارسی‌زبان بازار مالی نوشته می‌شود. "
-                        "برای اصطلاحات تخصصی تحلیل تکنیکال (مثل bear flag, bull flag, support, "
-                        "resistance, breakout) از معادل رایج و شناخته‌شده‌ی فارسی این حوزه استفاده کن "
-                        "(مثلاً 'پرچم نزولی'، 'پرچم صعودی'، 'سطح حمایت'، 'سطح مقاومت'). "
-                        "برای اصطلاحات مالی/اقتصادی عمومی هم از معادل دقیق و تخصصی استفاده کن، نه "
-                        "معنی نزدیک یا تحت‌اللفظی؛ مثلاً: 'fund shuts down/is shut down' یعنی "
-                        "'صندوق منحل می‌شود' (نه 'منقضی می‌شود')، 'IPO' یعنی 'عرضه‌ی اولیه سهام'، "
-                        "'yield' یعنی 'بازده'، 'rate cut/hike' یعنی 'کاهش/افزایش نرخ بهره'، "
-                        "'inflation' یعنی 'تورم'، 'default' یعنی 'نکول'، 'liquidity' یعنی 'نقدینگی'. "
-                        "همیشه دقت کن که فعل و اصطلاح انتخابی، همون معنای مالی/اقتصادی دقیق متن "
-                        "اصلی رو برسونه، نه یه معادل نزدیک ولی نادرست. "
-                        "از لحن محاوره‌ای طبیعی و امروزی استفاده کن (مثل 'رو' به‌جای "
-                        "'را'، 'می‌کنه' به‌جای 'می‌کند')، نه لحن رسمی و کتابی. "
-                        "فقط ترجمه را برگردان، بدون هیچ توضیح یا مقدمه‌ی اضافی."
-                    ),
-                },
-                {"role": "user", "content": text},
-            ],
-            "temperature": 0.3,
-        }
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-        }
-        resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        translated = data["choices"][0]["message"]["content"].strip()
-        if not translated:
-            return translate_with_google_fallback(text)
-        if not numbers_match(text, translated):
-            print("⚠️ اعداد ترجمه با متن اصلی نمی‌خونه (احتمال توهم مدل)، رفتن سراغ پشتیبان گوگل")
-            return translate_with_google_fallback(text)
-        return translated
-    except Exception as e:
-        print(f"خطا در ترجمه با OpenRouter، رفتن سراغ پشتیبان: {e}")
-        return translate_with_google_fallback(text)
+    system_prompt = (
+        "شما یک مترجم حرفه‌ای اخبار مالی، بازارهای سرمایه و تحلیل تکنیکال هستید. "
+        "متن انگلیسی داده‌شده را به فارسی روان و طبیعی ترجمه کن، دقیقاً به سبکی که "
+        "در اخبار و کانال‌های تحلیلی فارسی‌زبان بازار مالی نوشته می‌شود. "
+        "برای اصطلاحات تخصصی تحلیل تکنیکال (مثل bear flag, bull flag, support, "
+        "resistance, breakout) از معادل رایج و شناخته‌شده‌ی فارسی این حوزه استفاده کن "
+        "(مثلاً 'پرچم نزولی'، 'پرچم صعودی'، 'سطح حمایت'، 'سطح مقاومت'). "
+        "برای اصطلاحات مالی/اقتصادی عمومی هم از معادل دقیق و تخصصی استفاده کن، نه "
+        "معنی نزدیک یا تحت‌اللفظی؛ مثلاً: 'fund shuts down/is shut down' یعنی "
+        "'صندوق منحل می‌شود' (نه 'منقضی می‌شود')، 'IPO' یعنی 'عرضه‌ی اولیه سهام'، "
+        "'yield' یعنی 'بازده'، 'rate cut/hike' یعنی 'کاهش/افزایش نرخ بهره'، "
+        "'inflation' یعنی 'تورم'، 'default' یعنی 'نکول'، 'liquidity' یعنی 'نقدینگی'. "
+        "همیشه دقت کن که فعل و اصطلاح انتخابی، همون معنای مالی/اقتصادی دقیق متن "
+        "اصلی رو برسونه، نه یه معادل نزدیک ولی نادرست. "
+        "از لحن محاوره‌ای طبیعی و امروزی استفاده کن (مثل 'رو' به‌جای "
+        "'را'، 'می‌کنه' به‌جای 'می‌کند')، نه لحن رسمی و کتابی. "
+        "فقط ترجمه را برگردان، بدون هیچ توضیح یا مقدمه‌ی اضافی."
+    )
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    for model_name in OPENROUTER_MODEL_CANDIDATES:
+        try:
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text},
+                ],
+                "temperature": 0.3,
+            }
+            resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            translated = data["choices"][0]["message"]["content"].strip()
+
+            if not translated:
+                print(f"⚠️ مدل {model_name} خروجی خالی داد، مدل بعدی رو امتحان می‌کنیم")
+                continue
+
+            if not numbers_match(text, translated):
+                print(f"⚠️ اعداد ترجمه‌ی مدل {model_name} با متن اصلی نمی‌خونه، مدل بعدی")
+                continue
+
+            return translated  # موفق بود
+
+        except Exception as e:
+            print(f"خطا با مدل {model_name}: {e}، مدل بعدی رو امتحان می‌کنیم")
+            continue
+
+    # اگه هیچ‌کدوم از مدل‌ها جواب نداد، گوگل ترنسلیت پشتیبان نهایی
+    print("⚠️ هیچ‌کدوم از مدل‌های OpenRouter جواب نداد، رفتن سراغ پشتیبان گوگل")
+    return translate_with_google_fallback(text)
 
 
 def smart_truncate(text, limit):
