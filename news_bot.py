@@ -34,7 +34,7 @@ REQUEST_HEADERS = {"User-Agent": USER_AGENT}
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")  # مثال: @mychannel یا -1001234567890
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+OPENROUTER_MODEL = "openrouter/free"  # خودکار از بین مدل‌های رایگانِ فعلاً فعال انتخاب می‌کنه (شامل DeepSeek هم می‌شه)
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 STATE_FILE = "sent_news.json"
@@ -171,7 +171,7 @@ def translate_to_persian(text, max_chars=None):
     if not text:
         return ""
     limit = max_chars if max_chars else MAX_BODY_CHARS
-    text = text[:limit]
+    text = smart_truncate(text, limit)
 
     if not OPENROUTER_API_KEY:
         return translate_with_google_fallback(text)
@@ -183,8 +183,14 @@ def translate_to_persian(text, max_chars=None):
                 {
                     "role": "system",
                     "content": (
-                        "شما یک مترجم حرفه‌ای اخبار مالی و اقتصادی هستید. "
-                        "متن انگلیسی داده‌شده را به فارسی روان، طبیعی و دقیق ترجمه کن. "
+                        "شما یک مترجم حرفه‌ای اخبار مالی، بازارهای سرمایه و تحلیل تکنیکال هستید. "
+                        "متن انگلیسی داده‌شده را به فارسی روان و طبیعی ترجمه کن، دقیقاً به سبکی که "
+                        "در اخبار و کانال‌های تحلیلی فارسی‌زبان بازار مالی نوشته می‌شود. "
+                        "برای اصطلاحات تخصصی تحلیل تکنیکال (مثل bear flag, bull flag, support, "
+                        "resistance, breakout) از معادل رایج و شناخته‌شده‌ی فارسی این حوزه استفاده کن "
+                        "(مثلاً 'پرچم نزولی'، 'پرچم صعودی'، 'سطح حمایت'، 'سطح مقاومت')، نه ترجمه‌ی "
+                        "کلمه‌به‌کلمه. از لحن محاوره‌ای طبیعی و امروزی استفاده کن (مثل 'رو' به‌جای "
+                        "'را'، 'می‌کنه' به‌جای 'می‌کند')، نه لحن رسمی و کتابی. "
                         "فقط ترجمه را برگردان، بدون هیچ توضیح یا مقدمه‌ی اضافی."
                     ),
                 },
@@ -204,6 +210,23 @@ def translate_to_persian(text, max_chars=None):
     except Exception as e:
         print(f"خطا در ترجمه با OpenRouter، رفتن سراغ پشتیبان: {e}")
         return translate_with_google_fallback(text)
+
+
+def smart_truncate(text, limit):
+    """متن رو تا سقف limit کاراکتر می‌بره، ولی سر آخرین جمله یا کلمه‌ی کامل قطعش می‌کنه
+    (نه وسط یه کلمه، که باعث می‌شد آخر متن یه تیکه‌ی نصفه‌ول انگلیسی بمونه)."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    # اول سعی می‌کنیم سر آخرین نقطه/علامت پایان جمله قطع کنیم
+    last_sentence_end = max(cut.rfind("."), cut.rfind("!"), cut.rfind("؟"), cut.rfind("?"))
+    if last_sentence_end > limit * 0.5:  # اگه خیلی کوتاه نشه
+        return cut[:last_sentence_end + 1]
+    # وگرنه حداقل سر آخرین فاصله (پایان یه کلمه) قطع کن
+    last_space = cut.rfind(" ")
+    if last_space > 0:
+        return cut[:last_space]
+    return cut
 
 
 def fix_bidi_text(text):
@@ -398,13 +421,25 @@ def main():
         )
     )
 
-    # مرحله ۳: ارسال به تلگرام (حداکثر MAX_ITEMS_PER_RUN خبر)
-    for c in candidates[:MAX_ITEMS_PER_RUN]:
+    # مرحله ۳: ارسال به تلگرام (حداکثر MAX_ITEMS_PER_RUN خبر با محتوای واقعی)
+    MIN_BODY_CHARS = 40  # اگه متن استخراج‌شده کمتر از این باشه، خبر بی‌محتوا حساب می‌شه
+
+    for c in candidates:
+        if sent_count >= MAX_ITEMS_PER_RUN:
+            break
+
         # سعی می‌کنیم متن کامل مقاله رو از خود سایت بگیریم (طولانی‌تر از خلاصه RSS)
         full_text = fetch_full_article_text(c["link"])
         clean_rss_summary = re.sub("<[^<]+?>", "", c["rss_summary"])
         body_text = full_text if len(full_text) > len(clean_rss_summary) else clean_rss_summary
-        body_text = body_text[:MAX_BODY_CHARS]
+        body_text = smart_truncate(body_text, MAX_BODY_CHARS)
+
+        if len(body_text.strip()) < MIN_BODY_CHARS:
+            # نتونستیم محتوای واقعی پیدا کنیم؛ این خبر رو رد می‌کنیم (ولی به‌عنوان دیده‌شده ثبتش می‌کنیم
+            # تا هر اجرا دوباره امتحانش نکنیم)
+            sent_hashes.add(c["item_hash"])
+            print(f"⏭️ رد شد (بدون محتوای کافی): {c['title'][:60]}")
+            continue
 
         title_fa = translate_to_persian(c["title"], max_chars=300)
         summary_fa = translate_to_persian(body_text)
