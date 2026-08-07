@@ -49,7 +49,7 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 STATE_FILE = "sent_news.json"
 MAX_STATE_ITEMS = 500          # حداکثر تعداد لینک ذخیره‌شده برای جلوگیری از تکرار
-MAX_ITEMS_PER_RUN = 6          # حداکثر خبر در هر اجرا (برای پخش‌شدن اخبار در طول روز)
+MAX_ITEMS_PER_RUN = 14         # حداکثر خبر در هر اجرا (چون هر ۲ ساعت اجرا می‌شه، نه هر ۳۰ دقیقه)
 MAX_NEWS_AGE_HOURS = 5          # فقط اخباری که کمتر از این تعداد ساعت پیش منتشر شده‌اند (تازه بمونه)
 MAX_BODY_CHARS = 1200          # حداکثر طول متن خبر قبل از ترجمه
 MAX_SENTENCES_TO_TRANSLATE = 12  # (دیگر استفاده نمی‌شود، برای سازگاری نگه داشته شده)
@@ -172,6 +172,9 @@ BOILERPLATE_MARKERS = [
     "related posts", "related articles", "more top reads",
     "you might also like", "read more", "recommended for you",
     "more from", "also read", "further reading",
+    "is committed to providing", "editorial policy", "editorial independence",
+    "editorial standards", "produced with full editorial",
+    "disclaimer:", "this article does not contain", "not financial advice",
 ]
 
 
@@ -185,6 +188,28 @@ def strip_boilerplate(text):
         if idx != -1 and idx < cut_at:
             cut_at = idx
     return text[:cut_at].strip()
+
+
+def clean_markdown_and_dedupe_title(text, original_title=""):
+    """علامت‌های خام مارک‌داون (#, ##) رو از تیترها حذف می‌کنه (چون تلگرام مارک‌داون
+    استاندارد نمی‌فهمه)، و اگه اولین خط متن تقریباً همون تیتر خبر باشه (تکراری با
+    عنوانی که جدا می‌فرستیم)، اون خط رو حذف می‌کنه."""
+    lines = text.split("\n")
+    cleaned_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # حذف نشانه‌های تیتر مارک‌داون از ابتدای خط (#, ##, ###...)
+        stripped = re.sub(r"^#{1,6}\s*", "", stripped)
+        cleaned_lines.append(stripped)
+
+    # حذف خط اول اگه تقریباً عین تیتر خبر باشه (جلوگیری از تکرار عنوان)
+    if cleaned_lines and original_title:
+        first_line_norm = re.sub(r"\s+", " ", cleaned_lines[0].lower()).strip()
+        title_norm = re.sub(r"\s+", " ", original_title.lower()).strip()
+        if first_line_norm and difflib.SequenceMatcher(None, first_line_norm, title_norm).ratio() > 0.6:
+            cleaned_lines = cleaned_lines[1:]
+
+    return "\n".join(l for l in cleaned_lines if l.strip())
 
 
 def dedupe_paragraphs(text):
@@ -208,7 +233,7 @@ def dedupe_paragraphs(text):
     return "\n".join(kept)
 
 
-def fetch_full_article_text(url):
+def fetch_full_article_text(url, original_title=""):
     """تلاش برای گرفتن متن کامل خبر از خود صفحه (به‌جای فقط خلاصه‌ی کوتاه RSS)."""
     try:
         resp = requests.get(url, headers=REQUEST_HEADERS, timeout=15)
@@ -221,7 +246,8 @@ def fetch_full_article_text(url):
                 output_format="markdown",  # لیست‌های بولت‌دار و خط‌به‌خط رو حفظ می‌کنه (مهم برای خبرهای بازار)
             )
             if text:
-                return dedupe_paragraphs(strip_boilerplate(text.strip()))
+                cleaned = dedupe_paragraphs(strip_boilerplate(text.strip()))
+                return clean_markdown_and_dedupe_title(cleaned, original_title)
     except Exception as e:
         print(f"خطا در استخراج متن کامل: {e}")
     return ""
@@ -267,26 +293,40 @@ def translate_to_persian(text, max_chars=None):
     text = smart_truncate(text, limit)
 
     system_prompt = (
-        "شما یک مترجم حرفه‌ای اخبار مالی، بازارهای سرمایه و تحلیل تکنیکال هستید. "
-        "متن انگلیسی داده‌شده را به فارسی روان و طبیعی ترجمه کن، دقیقاً به سبکی که "
-        "در اخبار و کانال‌های تحلیلی فارسی‌زبان بازار مالی نوشته می‌شود. "
-        "برای اصطلاحات تخصصی تحلیل تکنیکال (مثل bear flag, bull flag, support, "
-        "resistance, breakout) از معادل رایج و شناخته‌شده‌ی فارسی این حوزه استفاده کن "
-        "(مثلاً 'پرچم نزولی'، 'پرچم صعودی'، 'سطح حمایت'، 'سطح مقاومت'). "
-        "برای اصطلاحات مالی/اقتصادی عمومی هم از معادل دقیق و تخصصی استفاده کن، نه "
-        "معنی نزدیک یا تحت‌اللفظی؛ مثلاً: 'fund shuts down/is shut down' یعنی "
-        "'صندوق منحل می‌شود' (نه 'منقضی می‌شود')، 'IPO' یعنی 'عرضه‌ی اولیه سهام'، "
-        "'yield' یعنی 'بازده'، 'rate cut/hike' یعنی 'کاهش/افزایش نرخ بهره'، "
-        "'inflation' یعنی 'تورم'، 'default' یعنی 'نکول'، 'liquidity' یعنی 'نقدینگی'. "
-        "همیشه دقت کن که فعل و اصطلاح انتخابی، همون معنای مالی/اقتصادی دقیق متن "
-        "اصلی رو برسونه، نه یه معادل نزدیک ولی نادرست. "
-        "از لحن محاوره‌ای طبیعی و امروزی فارسی استفاده کن، دقیقاً مثل کانال‌های تلگرامی "
-        "تحلیل بازار که مردم روزمره می‌خونن، نه لحن رسمی خبرگزاری یا کتابی. این‌ها اجباریه: "
-        "به‌جای 'را' از 'رو' استفاده کن، به‌جای 'می‌کند/می‌شود/می‌رسد' از 'می‌کنه/می‌شه/می‌رسه' "
-        "استفاده کن، به‌جای 'است' در آخر جمله از 'ه' استفاده کن یا حذفش کن (مثلاً "
-        "'نگه داشته شده است' بشه 'نگه داشته شده' یا 'مونده'، 'کاهش یافته است' بشه "
-        "'کاهش پیدا کرده'). از فعل‌های ساده و رایج محاوره استفاده کن، نه فعل‌های مرکب رسمی. "
-        "اگر متن به‌صورت لیست یا نقطه‌به‌نقطه (بولت‌پوینت) با آیتم‌های جداگانه (مثلاً چند خبر کوتاه بازار، هرکدوم با درصد و قیمت جدا) بود، همون ساختار خط‌به‌خط یا بولت رو در ترجمه هم دقیقاً حفظ کن؛ هر آیتم رو کاملاً جدا از بقیه ترجمه کن و هیچ‌وقت دو آیتم مجزا رو تو یه جمله قاطی نکن، حتی اگه تو متن اصلی خط جداکننده نداشتن. ""فقط ترجمه را برگردان، بدون هیچ توضیح یا مقدمه‌ی اضافی."
+        "شما یک مترجم و تحلیلگر ارشد اخبار مالی هستید که سال‌ها برای کانال‌های معتبر "
+        "تلگرامی و اینستاگرامی تحلیل فارکس، طلا، نفت و ارز دیجیتال فارسی‌زبان محتوا "
+        "نوشته‌اید. متن انگلیسی داده‌شده را دقیقاً با همون سطح حرفه‌ای و طبیعی ترجمه کن. "
+        "\n\n"
+        "**واژگان تخصصی تحلیل تکنیکال** (معادل دقیق و رایج فارسی، نه ترجمه‌ی لفظی):\n"
+        "bear flag=پرچم نزولی، bull flag=پرچم صعودی، support=سطح حمایت، "
+        "resistance=سطح مقاومت، breakout=شکست قیمتی، breakdown=ریزش زیر حمایت، "
+        "trendline=خط روند، moving average=میانگین متحرک، overbought=اشباع خرید، "
+        "oversold=اشباع فروش، bullish/bearish=صعودی/نزولی، rally=رشد قیمتی، "
+        "correction=اصلاح قیمتی، volatility=نوسان، consolidation=رنج زدن/تثبیت، "
+        "double top/bottom=سقف/کف دوقلو، head and shoulders=الگوی سر و شونه.\n"
+        "**واژگان مالی/اقتصادی کلان**:\n"
+        "fund shuts down=صندوق منحل می‌شه، IPO=عرضه‌ی اولیه سهام، yield=بازده، "
+        "rate cut/hike=کاهش/افزایش نرخ بهره، inflation=تورم، default=نکول، "
+        "liquidity=نقدینگی، quantitative easing=تسهیل کمّی، hawkish/dovish=سیاست "
+        "انقباضی/انبساطی، short squeeze=فشار فروش استقراضی، margin call=اخطار "
+        "افزایش وجه تضمین، leverage=اهرم، delisting=لغو پذیرش از بورس.\n"
+        "همیشه دقت کن معادل انتخابی، همون معنای دقیق مالی متن اصلی رو برسونه، نه "
+        "نزدیک‌ترین کلمه‌ی لغت‌نامه‌ای.\n\n"
+        "**لحن:** دقیقاً محاوره‌ای و طبیعی فارسی امروزی، مثل یه تحلیلگر باتجربه که "
+        "مستقیم داره برای اعضای کانالش می‌نویسه، نه لحن رسمی خبرگزاری. این‌ها اجباریه: "
+        "'را'→'رو'، 'می‌کند/می‌شود/می‌رسد'→'می‌کنه/می‌شه/می‌رسه'، حذف یا تبدیل 'است' "
+        "در آخر جمله (مثلاً 'کاهش یافته است'→'کاهش پیدا کرده').\n\n"
+        "**مثال سبک مطلوب:**\n"
+        "متن انگلیسی: \"Gold extended its gains for a third session, climbing 1.2% "
+        "to $4,320 as the dollar weakened ahead of Friday's jobs report.\"\n"
+        "ترجمه‌ی خوب: \"طلا برای سومین جلسه‌ی متوالی به رشدش ادامه داد و ۱.۲٪ رشد "
+        "کرد و به ۴۳۲۰ دلار رسید، چون دلار قبل از گزارش اشتغال جمعه ضعیف شده.\"\n\n"
+        "**ساختار لیست/بولت:** اگه متن به‌صورت لیست یا نقطه‌به‌نقطه با آیتم‌های "
+        "جداگانه بود (مثلاً چند خبر کوتاه بازار، هرکدوم با درصد و قیمت جدا)، همون "
+        "ساختار خط‌به‌خط یا بولت رو در ترجمه هم دقیقاً حفظ کن؛ هر آیتم رو کاملاً جدا "
+        "ترجمه کن و هیچ‌وقت دو آیتم مجزا رو تو یه جمله قاطی نکن، حتی اگه متن اصلی "
+        "خط جداکننده نداشت.\n\n"
+        "فقط ترجمه را برگردان، بدون هیچ توضیح یا مقدمه‌ی اضافی."
     )
 
     # مرحله ۱: DeepSeek مستقیم (اگه کلید پولی تنظیم شده باشه)
@@ -375,16 +415,27 @@ def fix_bidi_text(text):
     """
     دور هر کلمه/عبارت انگلیسی-عددی (مثل IPO, Fed, GDP, 4.3) یک ایزوله‌ی جهتی
     یونیکد می‌کشد تا وسط متن فارسی (راست‌به‌چپ) درست و خوانا نمایش داده شود.
+    همچنین اگه خود متن با یه کلمه‌ی انگلیسی شروع بشه (مثلاً اسم برند مثل Circle)،
+    یه علامت نامرئی «راست‌به‌چپ» اول متن اضافه می‌کنه تا کل پاراگراف چپ‌به‌راست نشه.
     """
     if not text:
         return text
     LRI = '\u2066'  # Left-to-Right Isolate
     PDI = '\u2069'  # Pop Directional Isolate
-    return re.sub(
+    RLM = '\u200f'  # Right-to-Left Mark
+
+    result = re.sub(
         r'[A-Za-z0-9][A-Za-z0-9.\-%/]*',
         lambda m: f'{LRI}{m.group(0)}{PDI}',
         text,
     )
+
+    # اگه اولین کاراکتر (غیر از فاصله) انگلیسی/لاتینه، یه RLM اول متن می‌ذاریم
+    # تا جهت کلی پاراگراف راست‌به‌چپ در نظر گرفته بشه
+    if re.match(r'^\s*[A-Za-z0-9]', text):
+        result = RLM + result
+
+    return result
 
 
 def send_plain_message(text):
@@ -575,7 +626,7 @@ def main():
             break
 
         # سعی می‌کنیم متن کامل مقاله رو از خود سایت بگیریم (طولانی‌تر از خلاصه RSS)
-        full_text = fetch_full_article_text(c["link"])
+        full_text = fetch_full_article_text(c["link"], c["title"])
         clean_rss_summary = re.sub("<[^<]+?>", "", c["rss_summary"])
         body_text = full_text if len(full_text) > len(clean_rss_summary) else clean_rss_summary
         body_text = smart_truncate(body_text, MAX_BODY_CHARS)
