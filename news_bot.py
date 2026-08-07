@@ -43,11 +43,7 @@ DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 # OpenRouter رایگان (پشتیبان، اگه DeepSeek جواب نداد یا کلیدش نبود)
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 OPENROUTER_MODEL_CANDIDATES = [
-    "deepseek/deepseek-v4-flash:free",          # ترجیح اول - کیفیت خوب برای فارسی (اگه در دسترس باشه)
-    "deepseek/deepseek-chat-v3.1:free",         # نسخه‌ی جایگزین دیپ‌سیک
-    "meta-llama/llama-3.3-70b-instruct:free",   # مدل بزرگ و شناخته‌شده
-    "qwen/qwen3-235b-a22b:free",                # مدل بزرگ جایگزین
-    "openrouter/free",                          # روتر خودکار (همیشه یه گزینه‌ی فعال پیدا می‌کنه)
+    "openrouter/free",  # روتر خودکار - همیشه یه گزینه‌ی فعال پیدا می‌کنه، بدون نیاز به قفل کردن مدل خاص
 ]
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -199,7 +195,7 @@ def dedupe_paragraphs(text):
     kept = []
     kept_normalized = []
     for p in paragraphs:
-        normalized = re.sub(r"\s+", " ", p.lower()).strip("-• ")
+        normalized = re.sub(r"\s+", " ", p.lower()).strip("-*#• ")
         is_duplicate = False
         for k_norm in kept_normalized:
             ratio = difflib.SequenceMatcher(None, normalized, k_norm).ratio()
@@ -222,6 +218,7 @@ def fetch_full_article_text(url):
                 favor_precision=True,  # ترجیح میده کمتر بگیره ولی دقیق‌تر باشه (کمتر بولرپلیت)
                 include_comments=False,
                 include_tables=False,
+                output_format="markdown",  # لیست‌های بولت‌دار و خط‌به‌خط رو حفظ می‌کنه (مهم برای خبرهای بازار)
             )
             if text:
                 return dedupe_paragraphs(strip_boilerplate(text.strip()))
@@ -289,7 +286,7 @@ def translate_to_persian(text, max_chars=None):
         "استفاده کن، به‌جای 'است' در آخر جمله از 'ه' استفاده کن یا حذفش کن (مثلاً "
         "'نگه داشته شده است' بشه 'نگه داشته شده' یا 'مونده'، 'کاهش یافته است' بشه "
         "'کاهش پیدا کرده'). از فعل‌های ساده و رایج محاوره استفاده کن، نه فعل‌های مرکب رسمی. "
-        "فقط ترجمه را برگردان، بدون هیچ توضیح یا مقدمه‌ی اضافی."
+        "اگر متن به‌صورت لیست یا نقطه‌به‌نقطه (بولت‌پوینت) با آیتم‌های جداگانه (مثلاً چند خبر کوتاه بازار، هرکدوم با درصد و قیمت جدا) بود، همون ساختار خط‌به‌خط یا بولت رو در ترجمه هم دقیقاً حفظ کن؛ هر آیتم رو کاملاً جدا از بقیه ترجمه کن و هیچ‌وقت دو آیتم مجزا رو تو یه جمله قاطی نکن، حتی اگه تو متن اصلی خط جداکننده نداشتن. ""فقط ترجمه را برگردان، بدون هیچ توضیح یا مقدمه‌ی اضافی."
     )
 
     # مرحله ۱: DeepSeek مستقیم (اگه کلید پولی تنظیم شده باشه)
@@ -307,7 +304,7 @@ def translate_to_persian(text, max_chars=None):
                 "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
                 "Content-Type": "application/json",
             }
-            resp = requests.post(DEEPSEEK_URL, headers=headers, json=payload, timeout=30)
+            resp = requests.post(DEEPSEEK_URL, headers=headers, json=payload, timeout=45)
             resp.raise_for_status()
             data = resp.json()
             translated = data["choices"][0]["message"]["content"].strip()
