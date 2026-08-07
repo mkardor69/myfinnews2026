@@ -33,6 +33,13 @@ REQUEST_HEADERS = {"User-Agent": USER_AGENT}
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")  # مثال: @mychannel یا -1001234567890
+
+# DeepSeek مستقیم (حساب پولی خودت - قابل‌اعتمادتر از نسخه‌های رایگان)
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+DEEPSEEK_MODEL = "deepseek-v4-flash"  # نام مدل فعلی API رسمی دیپ‌سیک (نام قدیمی deepseek-chat منقضی شده)
+DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+
+# OpenRouter رایگان (پشتیبان، اگه DeepSeek جواب نداد یا کلیدش نبود)
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 OPENROUTER_MODEL_CANDIDATES = [
     "deepseek/deepseek-v4-flash:free",          # ترجیح اول - کیفیت خوب برای فارسی (اگه در دسترس باشه)
@@ -117,6 +124,20 @@ def matches_keywords(title, summary):
         return True
     text = f"{title} {summary}".lower()
     return any(kw.lower() in text for kw in KEYWORDS)
+
+
+ERROR_PAGE_MARKERS = [
+    "error 500", "error 404", "server error", "that's an error",
+    "that’s an error", "please try again later", "page not found",
+    "404 not found", "500 internal server error",
+]
+
+
+def looks_like_error_page(title, summary=""):
+    """تشخیص می‌ده که آیا این «خبر» در واقع یه صفحه‌ی خطای واقعیه که اشتباهی
+    تو فید منبع افتاده (مثل خطای سرور خود سایت خبری)، نه یه خبر واقعی."""
+    text = f"{title} {summary}".lower()
+    return any(marker in text for marker in ERROR_PAGE_MARKERS)
 
 
 def is_recent(entry):
@@ -219,15 +240,12 @@ def numbers_match(original_text, translated_text):
 
 
 def translate_to_persian(text, max_chars=None):
-    """ترجمه‌ی متن به فارسی. چند مدل OpenRouter رو به‌ترتیب امتحان می‌کنه، اگر همه ناموفق
-    بودن یا اعدادشون درست نبود، با گوگل ترنسلیت (پشتیبان نهایی)."""
+    """ترجمه‌ی متن به فارسی. اول DeepSeek مستقیم (حساب پولی خودت، قابل‌اعتمادتر)،
+    بعد چند مدل رایگان OpenRouter، در نهایت گوگل ترنسلیت (پشتیبان آخر)."""
     if not text:
         return ""
     limit = max_chars if max_chars else MAX_BODY_CHARS
     text = smart_truncate(text, limit)
-
-    if not OPENROUTER_API_KEY:
-        return translate_with_google_fallback(text)
 
     system_prompt = (
         "شما یک مترجم حرفه‌ای اخبار مالی، بازارهای سرمایه و تحلیل تکنیکال هستید. "
@@ -248,39 +266,65 @@ def translate_to_persian(text, max_chars=None):
         "فقط ترجمه را برگردان، بدون هیچ توضیح یا مقدمه‌ی اضافی."
     )
 
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    for model_name in OPENROUTER_MODEL_CANDIDATES:
+    # مرحله ۱: DeepSeek مستقیم (اگه کلید پولی تنظیم شده باشه)
+    if DEEPSEEK_API_KEY:
         try:
             payload = {
-                "model": model_name,
+                "model": DEEPSEEK_MODEL,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text},
                 ],
                 "temperature": 0.3,
             }
-            resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=30)
+            headers = {
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                "Content-Type": "application/json",
+            }
+            resp = requests.post(DEEPSEEK_URL, headers=headers, json=payload, timeout=30)
             resp.raise_for_status()
             data = resp.json()
             translated = data["choices"][0]["message"]["content"].strip()
-
-            if not translated:
-                print(f"⚠️ مدل {model_name} خروجی خالی داد، مدل بعدی رو امتحان می‌کنیم")
-                continue
-
-            if not numbers_match(text, translated):
-                print(f"⚠️ اعداد ترجمه‌ی مدل {model_name} با متن اصلی نمی‌خونه، مدل بعدی")
-                continue
-
-            return translated  # موفق بود
-
+            if translated and numbers_match(text, translated):
+                return translated
+            print("⚠️ DeepSeek جواب مشکوک/خالی داد، رفتن سراغ گزینه‌های بعدی")
         except Exception as e:
-            print(f"خطا با مدل {model_name}: {e}، مدل بعدی رو امتحان می‌کنیم")
-            continue
+            print(f"خطا با DeepSeek مستقیم: {e}، رفتن سراغ گزینه‌های بعدی")
+
+    # مرحله ۲: مدل‌های رایگان OpenRouter (اگه کلیدش تنظیم شده باشه)
+    if OPENROUTER_API_KEY:
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        for model_name in OPENROUTER_MODEL_CANDIDATES:
+            try:
+                payload = {
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": text},
+                    ],
+                    "temperature": 0.3,
+                }
+                resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+                translated = data["choices"][0]["message"]["content"].strip()
+
+                if not translated:
+                    print(f"⚠️ مدل {model_name} خروجی خالی داد، مدل بعدی رو امتحان می‌کنیم")
+                    continue
+
+                if not numbers_match(text, translated):
+                    print(f"⚠️ اعداد ترجمه‌ی مدل {model_name} با متن اصلی نمی‌خونه، مدل بعدی")
+                    continue
+
+                return translated  # موفق بود
+
+            except Exception as e:
+                print(f"خطا با مدل {model_name}: {e}، مدل بعدی رو امتحان می‌کنیم")
+                continue
 
     # اگه هیچ‌کدوم از مدل‌ها جواب نداد، گوگل ترنسلیت پشتیبان نهایی
     print("⚠️ هیچ‌کدوم از مدل‌های OpenRouter جواب نداد، رفتن سراغ پشتیبان گوگل")
@@ -472,6 +516,10 @@ def main():
             if not title or not link:
                 continue
 
+            if looks_like_error_page(title, rss_summary):
+                print(f"⏭️ رد شد (به‌نظر صفحه‌ی خطا می‌رسه، نه خبر واقعی): {title[:60]}")
+                continue
+
             item_hash = make_hash(link)
             if item_hash in sent_hashes:
                 continue  # قبلاً ارسال شده
@@ -514,6 +562,11 @@ def main():
             # تا هر اجرا دوباره امتحانش نکنیم)
             sent_hashes.add(c["item_hash"])
             print(f"⏭️ رد شد (بدون محتوای کافی): {c['title'][:60]}")
+            continue
+
+        if looks_like_error_page(c["title"], body_text):
+            sent_hashes.add(c["item_hash"])
+            print(f"⏭️ رد شد (لینک به صفحه‌ی خطا رسیده): {c['title'][:60]}")
             continue
 
         title_fa = translate_to_persian(c["title"], max_chars=300)
