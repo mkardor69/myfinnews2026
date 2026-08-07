@@ -13,6 +13,7 @@ import requests
 import feedparser
 import re
 import trafilatura
+import difflib
 from datetime import datetime, timezone, date
 from calendar import timegm
 from zoneinfo import ZoneInfo
@@ -190,6 +191,27 @@ def strip_boilerplate(text):
     return text[:cut_at].strip()
 
 
+def dedupe_paragraphs(text):
+    """بعضی صفحات خبری اول یه خلاصه‌ی بولت‌پوینت می‌ذارن که همون جملات متن اصلی رو
+    با کلمات مشابه (نه لزوماً عیناً) تکرار می‌کنه. این تابع با مقایسه‌ی شباهت متنی،
+    پاراگراف‌های تکراری یا خیلی شبیه به‌هم رو حذف می‌کنه."""
+    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+    kept = []
+    kept_normalized = []
+    for p in paragraphs:
+        normalized = re.sub(r"\s+", " ", p.lower()).strip("-• ")
+        is_duplicate = False
+        for k_norm in kept_normalized:
+            ratio = difflib.SequenceMatcher(None, normalized, k_norm).ratio()
+            if ratio > 0.6:  # بیش از ۶۰٪ شباهت یعنی احتمالاً تکراره
+                is_duplicate = True
+                break
+        if not is_duplicate:
+            kept.append(p)
+            kept_normalized.append(normalized)
+    return "\n".join(kept)
+
+
 def fetch_full_article_text(url):
     """تلاش برای گرفتن متن کامل خبر از خود صفحه (به‌جای فقط خلاصه‌ی کوتاه RSS)."""
     try:
@@ -202,7 +224,7 @@ def fetch_full_article_text(url):
                 include_tables=False,
             )
             if text:
-                return strip_boilerplate(text.strip())
+                return dedupe_paragraphs(strip_boilerplate(text.strip()))
     except Exception as e:
         print(f"خطا در استخراج متن کامل: {e}")
     return ""
@@ -261,8 +283,12 @@ def translate_to_persian(text, max_chars=None):
         "'inflation' یعنی 'تورم'، 'default' یعنی 'نکول'، 'liquidity' یعنی 'نقدینگی'. "
         "همیشه دقت کن که فعل و اصطلاح انتخابی، همون معنای مالی/اقتصادی دقیق متن "
         "اصلی رو برسونه، نه یه معادل نزدیک ولی نادرست. "
-        "از لحن محاوره‌ای طبیعی و امروزی استفاده کن (مثل 'رو' به‌جای "
-        "'را'، 'می‌کنه' به‌جای 'می‌کند')، نه لحن رسمی و کتابی. "
+        "از لحن محاوره‌ای طبیعی و امروزی فارسی استفاده کن، دقیقاً مثل کانال‌های تلگرامی "
+        "تحلیل بازار که مردم روزمره می‌خونن، نه لحن رسمی خبرگزاری یا کتابی. این‌ها اجباریه: "
+        "به‌جای 'را' از 'رو' استفاده کن، به‌جای 'می‌کند/می‌شود/می‌رسد' از 'می‌کنه/می‌شه/می‌رسه' "
+        "استفاده کن، به‌جای 'است' در آخر جمله از 'ه' استفاده کن یا حذفش کن (مثلاً "
+        "'نگه داشته شده است' بشه 'نگه داشته شده' یا 'مونده'، 'کاهش یافته است' بشه "
+        "'کاهش پیدا کرده'). از فعل‌های ساده و رایج محاوره استفاده کن، نه فعل‌های مرکب رسمی. "
         "فقط ترجمه را برگردان، بدون هیچ توضیح یا مقدمه‌ی اضافی."
     )
 
