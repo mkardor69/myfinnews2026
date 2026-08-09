@@ -284,6 +284,25 @@ def numbers_match(original_text, translated_text):
     return len(missing) == 0
 
 
+# بازه‌ی یونیکد حروف/اسکریپت‌هایی که نباید تو ترجمه‌ی فارسی ظاهر بشن
+# (اگه ظاهر بشن، یعنی مدل داشته توهم می‌زده و زبون قاطی کرده)
+UNEXPECTED_SCRIPT_PATTERN = re.compile(
+    r'['
+    r'\u0400-\u04FF'   # سیریلیک (روسی و مشابه)
+    r'\u4E00-\u9FFF'   # چینی
+    r'\u3040-\u30FF'   # ژاپنی (هیراگانا/کاتاکانا)
+    r'\uAC00-\uD7AF'   # کره‌ای
+    r'\u0E00-\u0E7F'   # تایلندی
+    r']'
+)
+
+
+def has_unexpected_script(text):
+    """تشخیص می‌ده که آیا تو متن، حروف زبان‌های غیرمرتبط (روسی، چینی، ژاپنی، کره‌ای...)
+    ظاهر شده یا نه. اگه ظاهر شده باشه، تقریباً قطعیه که مدل داشته توهم می‌زده."""
+    return bool(UNEXPECTED_SCRIPT_PATTERN.search(text))
+
+
 def translate_to_persian(text, max_chars=None):
     """ترجمه‌ی متن به فارسی. اول DeepSeek مستقیم (حساب پولی خودت، قابل‌اعتمادتر)،
     بعد چند مدل رایگان OpenRouter، در نهایت گوگل ترنسلیت (پشتیبان آخر)."""
@@ -348,9 +367,9 @@ def translate_to_persian(text, max_chars=None):
             resp.raise_for_status()
             data = resp.json()
             translated = data["choices"][0]["message"]["content"].strip()
-            if translated and numbers_match(text, translated):
+            if translated and numbers_match(text, translated) and not has_unexpected_script(translated):
                 return translated
-            print("⚠️ DeepSeek جواب مشکوک/خالی داد، رفتن سراغ گزینه‌های بعدی")
+            print("⚠️ DeepSeek جواب مشکوک/خالی/با زبان اشتباه داد، رفتن سراغ گزینه‌های بعدی")
         except Exception as e:
             print(f"خطا با DeepSeek مستقیم: {e}، رفتن سراغ گزینه‌های بعدی")
 
@@ -381,6 +400,10 @@ def translate_to_persian(text, max_chars=None):
 
                 if not numbers_match(text, translated):
                     print(f"⚠️ اعداد ترجمه‌ی مدل {model_name} با متن اصلی نمی‌خونه، مدل بعدی")
+                    continue
+
+                if has_unexpected_script(translated):
+                    print(f"⚠️ ترجمه‌ی مدل {model_name} حاوی حروف زبان اشتباه (توهم مدل)، مدل بعدی")
                     continue
 
                 return translated  # موفق بود
@@ -424,16 +447,37 @@ def fix_bidi_text(text):
     PDI = '\u2069'  # Pop Directional Isolate
     RLM = '\u200f'  # Right-to-Left Mark
 
+    # مرحله ۱-الف: پسوندهای رایج فارسی (ها، های، تر، ترین، ای) که مستقیم به یه
+    # کلمه‌ی انگلیسی/عدد چسبیدن (مثل "ETFهای") باید با نیم‌فاصله (نه فاصله‌ی کامل)
+    # جدا بشن، وگرنه موقع تعویض خط از هم جدا میفتن و بدجوری به نظر میان
+    ZWNJ = '\u200c'  # نیم‌فاصله
+    persian_suffixes = r'(های|ها|ترین|تر|ای|یی)'
+    text = re.sub(rf'([A-Za-z0-9]){persian_suffixes}(?=[\s\u0600-\u06FF]|$)', rf'\1{ZWNJ}\2', text)
+
+    # مرحله ۱-ب: بقیه‌ی چسبندگی‌های فارسی-انگلیسی (که پسوند نیستن، بلکه دو کلمه‌ی
+    # جدان مثل "در"+"ETF") رو با فاصله‌ی کامل از هم جدا می‌کنیم
+    text = re.sub(r'([\u0600-\u06FF])([A-Za-z0-9])', r'\1 \2', text)
+    text = re.sub(r'([A-Za-z0-9])([\u0600-\u06FF])', r'\1 \2', text)
+
+    # مرحله ۲: بولت‌های خط‌تیره‌ای مارک‌داون ("- ") تو متن راست‌به‌چپ بدجوری نشون
+    # داده می‌شن؛ به‌جاش از یه بولت خنثی‌تر و مرسوم‌تر استفاده می‌کنیم
+    text = re.sub(r'(?m)^-\s+', '• ', text)
+
     result = re.sub(
         r'[A-Za-z0-9][A-Za-z0-9.\-%/]*',
         lambda m: f'{LRI}{m.group(0)}{PDI}',
         text,
     )
 
-    # اگه اولین کاراکتر (غیر از فاصله) انگلیسی/لاتینه، یه RLM اول متن می‌ذاریم
-    # تا جهت کلی پاراگراف راست‌به‌چپ در نظر گرفته بشه
-    if re.match(r'^\s*[A-Za-z0-9]', text):
-        result = RLM + result
+    # اگه اولین کاراکتر «هر خط» (نه فقط کل متن) انگلیسی/لاتینه، اول اون خط یه RLM
+    # می‌ذاریم - وگرنه اون خط به‌طور کامل جهتش برعکس می‌شه و بی‌معنی به نظر می‌رسه
+    lines = result.split("\n")
+    fixed_lines = []
+    for line in lines:
+        if re.match(r'^\s*[\u2066]', line):  # اگه از قبل ایزوله شروع شده (یعنی همون کلمه انگلیسی اول خطه)
+            line = RLM + line
+        fixed_lines.append(line)
+    result = "\n".join(fixed_lines)
 
     return result
 
