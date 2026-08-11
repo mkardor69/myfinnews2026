@@ -37,7 +37,7 @@ CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")  # مثال: @mychannel یا 
 
 # DeepSeek مستقیم (حساب پولی خودت - قابل‌اعتمادتر از نسخه‌های رایگان)
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
-DEEPSEEK_MODEL = "deepseek-v4-flash"  # نام مدل فعلی API رسمی دیپ‌سیک (نام قدیمی deepseek-chat منقضی شده)
+DEEPSEEK_MODEL = "deepseek-v4-pro"  # مدل بزرگ‌تر و دقیق‌تر (سه برابر گران‌تر از Flash، ولی بازم خیلی ارزونه)
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 
 # OpenRouter رایگان (پشتیبان، اگه DeepSeek جواب نداد یا کلیدش نبود)
@@ -135,6 +135,27 @@ def looks_like_error_page(title, summary=""):
     تو فید منبع افتاده (مثل خطای سرور خود سایت خبری)، نه یه خبر واقعی."""
     text = f"{title} {summary}".lower()
     return any(marker in text for marker in ERROR_PAGE_MARKERS)
+
+
+ADVICE_COLUMN_MARKERS = [
+    "is it a mistake", "should i ", "am i ", "can i afford",
+    "my brokerage", "my retirement", "my 401", "my portfolio",
+    "moneyist", "ask an advisor", "retirement weekly", "financial advisor",
+    "my husband", "my wife", "my parents", "my inheritance",
+]
+
+
+def is_personal_advice_column(title):
+    """تشخیص می‌ده که آیا این یه ستون پرسش‌وپاسخ مالی شخصیه (نه خبر واقعی بازار) —
+    این‌جور مقالات معمولاً پشت پی‌وال هستن و برای کانال خبری مالی/فارکس بی‌ربطن،
+    پس ترجمه‌شون فقط هزینه‌ی الکی می‌شه."""
+    lower_title = title.lower()
+    has_marker = any(marker in lower_title for marker in ADVICE_COLUMN_MARKERS)
+    # الگوی رایج دیگه: سوال شخصی که با ضمیر اول‌شخص شروع/تموم می‌شه و علامت سوال داره
+    looks_like_question = lower_title.strip().endswith("?") and (
+        " my " in lower_title or lower_title.startswith("i ") or lower_title.startswith("i'm")
+    )
+    return has_marker or looks_like_question
 
 
 def is_recent(entry):
@@ -636,6 +657,10 @@ def main():
 
             if looks_like_error_page(title, rss_summary):
                 print(f"⏭️ رد شد (به‌نظر صفحه‌ی خطا می‌رسه، نه خبر واقعی): {title[:60]}")
+                continue
+
+            if is_personal_advice_column(title):
+                print(f"⏭️ رد شد (ستون پرسش‌وپاسخ مالی شخصی، نه خبر بازار): {title[:60]}")
                 continue
 
             item_hash = make_hash(link)
