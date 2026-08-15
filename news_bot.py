@@ -37,7 +37,7 @@ CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")  # مثال: @mychannel یا 
 
 # DeepSeek مستقیم (حساب پولی خودت - قابل‌اعتمادتر از نسخه‌های رایگان)
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
-DEEPSEEK_MODEL = "deepseek-v4-pro"  # مدل بزرگ‌تر و دقیق‌تر (سه برابر گران‌تر از Flash، ولی بازم خیلی ارزونه)
+DEEPSEEK_MODEL = "deepseek-v4-flash"  # برگشت به Flash - مدل Pro همیشه رد می‌شد و فقط هزینه‌ی الکی داشت
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 
 # OpenRouter رایگان (پشتیبان، اگه DeepSeek جواب نداد یا کلیدش نبود)
@@ -288,8 +288,13 @@ PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
 
 
 def extract_numbers(text):
-    """همه‌ی اعداد (فارسی یا انگلیسی) رو از متن استخراج می‌کنه، برای مقایسه‌ی صحت ترجمه."""
+    """همه‌ی اعداد (فارسی یا انگلیسی) رو از متن استخراج می‌کنه، برای مقایسه‌ی صحت ترجمه.
+    جداکننده‌های هزارگان (ویرگول انگلیسی مثل 64,700 یا ممیز فارسی/عربی) رو حذف می‌کنه
+    تا "64,700" و "۶۴۷۰۰" (بدون جداکننده) هر دو یکسان حساب بشن - وگرنه به‌اشتباه فکر
+    می‌کردیم عدد گم شده، در حالی که فقط سبک نوشتنش فرق داشته."""
     normalized = text.translate(PERSIAN_DIGITS)
+    normalized = normalized.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
+    normalized = normalized.replace(",", "").replace("\u066c", "").replace("\u066b", ".")
     return set(re.findall(r"\d+\.?\d*", normalized))
 
 
@@ -369,72 +374,48 @@ def translate_to_persian(text, max_chars=None):
         "فقط ترجمه را برگردان، بدون هیچ توضیح یا مقدمه‌ی اضافی."
     )
 
-    # مرحله ۱: DeepSeek مستقیم (اگه کلید پولی تنظیم شده باشه)
+    # مرحله ۱: DeepSeek مستقیم (اگه کلید پولی تنظیم شده باشه) - یک بار امتحان،
+    # و اگه به‌خاطر Timeout موقتی fail شد، یه بار دیگه هم امتحان می‌کنیم
     if DEEPSEEK_API_KEY:
-        try:
-            payload = {
-                "model": DEEPSEEK_MODEL,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text},
-                ],
-                "temperature": 0.3,
-            }
-            headers = {
-                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                "Content-Type": "application/json",
-            }
-            resp = requests.post(DEEPSEEK_URL, headers=headers, json=payload, timeout=45)
-            resp.raise_for_status()
-            data = resp.json()
-            translated = data["choices"][0]["message"]["content"].strip()
-            if translated and numbers_match(text, translated) and not has_unexpected_script(translated):
-                return translated
-            print("⚠️ DeepSeek جواب مشکوک/خالی/با زبان اشتباه داد، رفتن سراغ گزینه‌های بعدی")
-        except Exception as e:
-            print(f"خطا با DeepSeek مستقیم: {e}، رفتن سراغ گزینه‌های بعدی")
-
-    # مرحله ۲: مدل‌های رایگان OpenRouter (اگه کلیدش تنظیم شده باشه)
-    if OPENROUTER_API_KEY:
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-        }
-        for model_name in OPENROUTER_MODEL_CANDIDATES:
+        for attempt in range(2):
             try:
                 payload = {
-                    "model": model_name,
+                    "model": DEEPSEEK_MODEL,
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": text},
                     ],
                     "temperature": 0.3,
                 }
-                resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=30)
+                headers = {
+                    "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                    "Content-Type": "application/json",
+                }
+                resp = requests.post(DEEPSEEK_URL, headers=headers, json=payload, timeout=45)
                 resp.raise_for_status()
                 data = resp.json()
                 translated = data["choices"][0]["message"]["content"].strip()
 
                 if not translated:
-                    print(f"⚠️ مدل {model_name} خروجی خالی داد، مدل بعدی رو امتحان می‌کنیم")
-                    continue
-
-                if not numbers_match(text, translated):
-                    print(f"⚠️ اعداد ترجمه‌ی مدل {model_name} با متن اصلی نمی‌خونه، مدل بعدی")
-                    continue
-
-                if has_unexpected_script(translated):
-                    print(f"⚠️ ترجمه‌ی مدل {model_name} حاوی حروف زبان اشتباه (توهم مدل)، مدل بعدی")
-                    continue
-
-                return translated  # موفق بود
-
+                    print("⚠️ DeepSeek خروجی خالی داد")
+                elif not numbers_match(text, translated):
+                    missing = extract_numbers(text) - extract_numbers(translated)
+                    print(f"⚠️ DeepSeek رد شد - این اعداد گم شدن: {missing}")
+                    print(f"   متن اصلی (اول ۱۵۰ کاراکتر): {text[:150]}")
+                    print(f"   ترجمه‌ی DeepSeek (اول ۱۵۰ کاراکتر): {translated[:150]}")
+                elif has_unexpected_script(translated):
+                    bad_chars = UNEXPECTED_SCRIPT_PATTERN.findall(translated)
+                    print(f"⚠️ DeepSeek رد شد - حروف زبان اشتباه پیدا شد: {bad_chars}")
+                    print(f"   ترجمه‌ی DeepSeek (اول ۱۵۰ کاراکتر): {translated[:150]}")
+                else:
+                    return translated
+                break  # جواب داد ولی رد شد (نه خطای شبکه)، دوباره امتحان نمی‌کنیم
             except Exception as e:
-                print(f"خطا با مدل {model_name}: {e}، مدل بعدی رو امتحان می‌کنیم")
-                continue
+                print(f"خطا با DeepSeek مستقیم (تلاش {attempt + 1}): {e}")
+                continue  # فقط برای خطای شبکه/Timeout یه بار دیگه امتحان کن
 
-    # اگه هیچ‌کدوم از مدل‌ها جواب نداد، گوگل ترنسلیت پشتیبان نهایی
-    print("⚠️ هیچ‌کدوم از مدل‌های OpenRouter جواب نداد، رفتن سراغ پشتیبان گوگل")
+    # اگه DeepSeek جواب نداد یا کلیدش نبود، گوگل ترنسلیت پشتیبان نهایی
+    print("⚠️ DeepSeek در دسترس نبود، رفتن سراغ پشتیبان گوگل")
     return translate_with_google_fallback(text)
 
 
