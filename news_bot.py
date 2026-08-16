@@ -295,7 +295,9 @@ def extract_numbers(text):
     normalized = text.translate(PERSIAN_DIGITS)
     normalized = normalized.translate(str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789"))
     normalized = normalized.replace(",", "").replace("\u066c", "").replace("\u066b", ".")
-    return set(re.findall(r"\d+\.?\d*", normalized))
+    # نکته: نقطه فقط وقتی جزو عدد حساب می‌شه که بعدش یه رقم دیگه بیاد (اعشار واقعی مثل 1.2)
+    # وگرنه نقطه‌ی پایان جمله (مثل "2026.") جزو عدد گرفته نمی‌شه
+    return set(re.findall(r"\d+(?:\.\d+)?", normalized))
 
 
 def numbers_match(original_text, translated_text):
