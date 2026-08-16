@@ -69,6 +69,7 @@ RSS_FEEDS = {
     "CoinDesk":                  "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "CoinTelegraph":             "https://cointelegraph.com/rss",
     "ForexLive":                 "https://www.forexlive.com/feed/news",
+    "FXStreet":                  "https://www.fxstreet.com/rss/news",
 }
 
 # کلمات کلیدی برای فیلتر کردن اخبار (اختیاری - اگر خالی بذاری همه اخبار فیدها می‌رن)
@@ -83,6 +84,7 @@ KEYWORDS = [
 SOURCE_PRIORITY = {
     "Investing.com - Forex":       1,
     "ForexLive":                   1,
+    "FXStreet":                    1,
     "Kitco News":                  1,   # طلا
     "OilPrice.com":                1,   # نفت
     "Investing.com - Commodities": 1,
@@ -359,6 +361,11 @@ def translate_to_persian(text, max_chars=None):
         "افزایش وجه تضمین، leverage=اهرم، delisting=لغو پذیرش از بورس.\n"
         "همیشه دقت کن معادل انتخابی، همون معنای دقیق مالی متن اصلی رو برسونه، نه "
         "نزدیک‌ترین کلمه‌ی لغت‌نامه‌ای.\n\n"
+        "**اسم برندها/رسانه‌ها/نهادها:** اسم شرکت‌ها، رسانه‌ها، صرافی‌ها و نهادهای "
+        "مالی (مثل CoinDesk, Bloomberg, Reuters, BlackRock, Coinbase, Goldman Sachs, "
+        "JPMorgan) رو همیشه دقیقاً به همون شکل انگلیسی/لاتین بنویس، هیچ‌وقت تلفظ "
+        "فارسی‌شده‌شون رو ننویس (مثلاً بنویس CoinDesk، نه «کوین‌دسک»؛ بنویس Bloomberg، "
+        "نه «بلومبرگ» مگر جایی که خیلی جا‌افتاده و رایجه مثل «فدرال رزرو» یا «گوگل»).\n\n"
         "**لحن:** دقیقاً محاوره‌ای و طبیعی فارسی امروزی، مثل یه تحلیلگر باتجربه که "
         "مستقیم داره برای اعضای کانالش می‌نویسه، نه لحن رسمی خبرگزاری. این‌ها اجباریه: "
         "'را'→'رو'، 'می‌کند/می‌شود/می‌رسد'→'می‌کنه/می‌شه/می‌رسه'، حذف یا تبدیل 'است' "
